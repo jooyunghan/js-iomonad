@@ -1,13 +1,7 @@
-// Free f a = Pure a | Impure (f (Free f a)) | FlatMap (Free f a) (a -> Free f b)
+// Free f a = Pure a |  (f (Free f a))
 class Free {
   static pure(a) {
     return new Pure(a)
-  }
-  flatMap(f) {
-    return new FlatMap(this, f)
-  }
-  map(f) {
-    return new FlatMap(this, (a) => new Pure(f(a)))
   }
 }
 
@@ -16,6 +10,12 @@ class Pure extends Free {
     super()
     this.a = a
   }
+  flatMap(f) {
+    return f(this.a) 
+  }
+  map(f) {
+    return new Pure(f(this.a))
+  }
 }
 
 class Impure extends Free {
@@ -23,22 +23,11 @@ class Impure extends Free {
     super()
     this.m = m
   }
-}
-
-class FlatMap extends Free {
-  constructor(s, f) {
-    super()
-    this.s = s
-    this.f = f
+  flatMap(f) {
+    return new Impure(() => this.m().map(a => a.flatMap(f)))
   }
-  // override to make right-associate flatMap
-  flatMap(g) {
-    const {s,f} = this
-    return new FlatMap(s, a => f(a).flatMap(g))
-  }
-  map(g) {
-    const {s,f} = this
-    return new FlatMap(s, a => f(a).map(g))
+  map(f) {
+    return new Impure(() => this.m().map(a => a.map(f)))
   }
 }
 
@@ -48,36 +37,18 @@ function liftF(fa) {
   return new Impure(() => fa.map(a => new Pure(a)))
 }
 
-function pureF(a) {
-  return new Pure(a)
-}
-
-// for now, it assumes `f a` as `(a -> b) -> b`
-function runF(free, handle, done) {
+// Free f a -> (forall b. f b -> m b) -> m a
+function runF(fa, interp, monad) {
   while (true) {
-    if (free instanceof Pure) {
-      done(free.a)
-      break
-    } else if (free instanceof Impure) { // Impure
-      const m = free.m() // force lazy
-      m.map(a => )
-      break
-    } else { // FlatMap
-      const {s, f} = free // closure
-      if (s instanceof Pure) {
-        free = f(s.a) // tail-recursion
-      } else if (s instanceof Impure) {
-        const m = s.m() // force lazy
-        f(handle(m))
-        m(x => process.nextTick(() => runF(f(x), done))) // recursion via callback
-        break
-      } else { // FlatMap
-        throw new Error("shouldn't happen left-assoicate flatMap")
-      }
-    }
+    if (fa instanceof Pure) {
+      return monad.pure(fa.a)
+    } else {
+      let m = fa.m() // force
+      return interp(m).flatMap(ma => runF(ma, interp, monad))
+    } 
   }
 }
 
 module.exports = {
-  runF, liftF, pureF, Free, Pure, Impure
+  runF, liftF, Free, Pure, Impure
 }

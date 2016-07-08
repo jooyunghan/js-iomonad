@@ -71,5 +71,5 @@ function getLine() {
 //forever(getLine().flatMap(s => putStrLn(">>>" + s + "<<<"))).unsafePerformIO()
 
 module.exports = {
-  putStrLn, getLine
+  putStrLn, getLine, IO
 }

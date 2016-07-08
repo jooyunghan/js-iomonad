@@ -1,29 +1,20 @@
-const {liftF, Pure, Impure} = require('./free')
-const readline = require('readline')
+const {liftF, runF, Free, Pure, Impure} = require('./free')
+const {IO, getLine, putStrLn} = require('./io')
+const {forever} = require('./monad')
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
-
-// Functor 
-class IO {
-  map(f) {}
-}
-
-class ReadLine extends IO {
-  constructor(cont) {
-    super()
-    this.cont = cont
+// ReadLine (f:String -> a)
+class ReadLine {
+  constructor(f) {
+    this.f = f
   }
   map(f) {
-    return new ReadLine(s => f(this.cont(s)))
+    return new ReadLine(line => f(this.f(line)))
   }
 }
 
-class PrintLine extends IO {
+// PrintLine s a
+class PrintLine {
   constructor(s, a) {
-    super()
     this.s = s
     this.a = a
   }
@@ -41,29 +32,23 @@ function printLine(s) {
   return liftF(new PrintLine(s))
 }
 
-// runIO
-function runIO(free, done) {
-  while (true) {
-    if (free instanceof Pure) {
-      done(free.a)
-      break
-    } else if (free instanceof Impure) { // Impure
-      const m = free.m() // force deferred arg TODO explicit lazy?
-      if (m instanceof ReadLine) {
-        rl.once('line', (line) => run(m.cont(line), done))
-        break
-      } else {
-        console.log(m.s)
-        free = m.a // tail recursion
-      }
-    } else { // flatMap
+// runIO :: Free IO a -> IO a
+function toIO(fa) {
+  return runF(fa, interpret, IO)
+}
 
-      
-
-    }
+// f a -> IO a
+function interpret(fa) {
+  if (fa instanceof ReadLine) {
+    return getLine().map(fa.f)
+  } else {
+    return putStrLn(fa.s).map(() => fa.a)
   }
 }
 
-module.exports = {
-  readLine, printLine, runIO
+function runIO(free, done) {
+  toIO(free).unsafePerformIO(done)
 }
+
+let prog = readLine().flatMap(s => printLine('>' + s))
+runIO(forever(prog), ()=>process.exit() )

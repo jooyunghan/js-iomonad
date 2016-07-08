@@ -1,5 +1,5 @@
 const {expect} = require('chai')
-const {liftF, runF, pureF} = require('../free')
+const {liftF, runF} = require('../free')
 
 class Cont {
   constructor(cont) {
