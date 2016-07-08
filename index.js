@@ -4,7 +4,7 @@ const {Free} = require('./free')
 // [m a] -> m [a]
 function sequence(as, m) {
   if (as.length == 0) {
-    return m.unit([])
+    return m.pure([])
   } else {
     return as[0].flatMap(a => sequence(as.slice(1), m).map(as => [a].concat(as)))
   }

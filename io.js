@@ -1,56 +1,75 @@
-const {liftF, Pure, Impure} = require('./free')
-const readline = require('readline')
+var lines = []
+var listeners = []
+var buffer = ""
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
+function emitLine(line) {
+  if (listeners.length > 0) {
+    listeners.shift()(line)
+  } else {
+    lines.push(line)
+  }
+}
 
-class ReadLine {
-  constructor(cont) {
-    this.cont = cont
+process.stdin.on('data', (data) => {
+  buffer = buffer + data.toString()
+  var i = 0, newline
+  while ((newline = buffer.indexOf('\n', i)) != -1) {
+    emitLine(buffer.slice(i, newline))
+    i = newline + 1
+  }
+  buffer = buffer.slice(i)
+})
+
+function readLine(l) {
+  if (lines.length > 0) {
+    l(lines.shift())
+  } else {
+    listeners.push(l)
+  }
+}
+
+function noop() {}
+
+class IO {
+  static pure(a) {
+    return new IO(cont => cont(a))    
+  }
+  constructor(run) {
+    this.run = run
+  }
+  flatMap(f) {
+    return new IO(cont => this.run(a => f(a).run(cont)))
   }
   map(f) {
-    return new ReadLine(s => f(this.cont(s)))
+    return this.flatMap(a => IO.pure(f(a)))
+  }
+  unsafePerformIO(cont = noop) {
+    this.run(cont)
   }
 }
 
-class PrintLine {
-  constructor(s, a) {
-    this.s = s
-    this.a = a
-  }
-  map(f) {
-    return new PrintLine(this.s, f(this.a))
-  }
+function putStrLn(s) {
+  return new IO(cont => {
+    console.log(s)
+    process.nextTick(() => {
+      cont()
+    })
+  }) 
 }
 
-function readLine() {
-  return liftF(new ReadLine(s => s))
+function getLine() {
+  return new IO(cont => {
+    readLine(line => {
+      process.nextTick(() => {
+        cont(line)
+      })
+    })
+  })
 }
 
-function printLine(s) {
-  return liftF(new PrintLine(s, undefined))
-}
-
-function run(free, done) {
-  while (true) {
-    if (free instanceof Pure) {
-      done(free.a)
-      break
-    } else { // Impure
-      let m = free.m()
-      if (m instanceof ReadLine) {
-        rl.once('line', (line) => run(m.cont(line), done))
-        break
-      } else {
-        console.log(m.s)
-        free = m.a // tail recursion
-      }
-    }
-  }
-}
+//forever(putStrLn(3)).unsafePerformIO()
+//forever(getLine().flatMap(s => putStrLn(">>>" + s + "<<<"))).unsafePerformIO()
 
 module.exports = {
-  readLine, printLine, run
+  putStrLn, getLine
 }

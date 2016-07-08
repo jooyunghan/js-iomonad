@@ -1,11 +1,10 @@
-var assert = require('assert')
+// Free f a = Pure a | Impure (f (Free f a)) | FlatMap (Free f a) (a -> Free f b)
 class Free {
-  static unit(a) {
+  static pure(a) {
     return new Pure(a)
   }
   flatMap(f) {
     return new FlatMap(this, f)
-    // return f(this.a)
   }
   map(f) {
     return new FlatMap(this, (a) => new Pure(f(a)))
@@ -32,35 +31,53 @@ class FlatMap extends Free {
     this.s = s
     this.f = f
   }
+  // override to make right-associate flatMap
+  flatMap(g) {
+    const {s,f} = this
+    return new FlatMap(s, a => f(a).flatMap(g))
+  }
+  map(g) {
+    const {s,f} = this
+    return new FlatMap(s, a => f(a).map(g))
+  }
 }
 
+// f a -> Free f a
 function liftF(fa) {
+  // Impure's constructor requires a lazy arg
   return new Impure(() => fa.map(a => new Pure(a)))
 }
 
-function run(free, done) {
+function pureF(a) {
+  return new Pure(a)
+}
+
+// for now, it assumes `f a` as `(a -> b) -> b`
+function runF(free, handle, done) {
   while (true) {
     if (free instanceof Pure) {
       done(free.a)
       break
     } else if (free instanceof Impure) { // Impure
-      free.m(done)
+      const m = free.m() // force lazy
+      m.map(a => )
       break
     } else { // FlatMap
-      let {s, f} = free // closure
+      const {s, f} = free // closure
       if (s instanceof Pure) {
         free = f(s.a) // tail-recursion
       } else if (s instanceof Impure) {
-        s.m(x => process.nextTick(() => run(f(x), done))) // recursion via callback
+        const m = s.m() // force lazy
+        f(handle(m))
+        m(x => process.nextTick(() => runF(f(x), done))) // recursion via callback
         break
       } else { // FlatMap
-        free = s.s.flatMap((a) => s.f(a).flatMap(f))
+        throw new Error("shouldn't happen left-assoicate flatMap")
       }
     }
   }
 }
 
-
 module.exports = {
-  run, liftF, Free, Pure, Impure
+  runF, liftF, pureF, Free, Pure, Impure
 }
