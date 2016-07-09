@@ -1,7 +1,13 @@
-// Free f a = Pure a |  (f (Free f a))
+// Free f a = Pure a | Impure (f a) | FlatMap (Free f a) (a -> Free f b)
 class Free {
   static pure(a) {
     return new Pure(a)
+  }
+  flatMap(f) {
+    return new FlatMap(this, f)
+  }
+  map(f) {
+    return this.flatMap(a => Free.pure(f(a)))
   }
 }
 
@@ -10,12 +16,6 @@ class Pure extends Free {
     super()
     this.a = a
   }
-  flatMap(f) {
-    return f(this.a) 
-  }
-  map(f) {
-    return new Pure(f(this.a))
-  }
 }
 
 class Impure extends Free {
@@ -23,18 +23,19 @@ class Impure extends Free {
     super()
     this.m = m
   }
-  flatMap(f) {
-    return new Impure(() => this.m().map(a => a.flatMap(f)))
-  }
-  map(f) {
-    return new Impure(() => this.m().map(a => a.map(f)))
+}
+
+class FlatMap extends Free {
+  constructor(s, f) {
+    super()
+    this.s = s
+    this.f = f
   }
 }
 
 // f a -> Free f a
 function liftF(fa) {
-  // Impure's constructor requires a lazy arg
-  return new Impure(() => fa.map(a => new Pure(a)))
+  return new Impure(fa)
 }
 
 // Free f a -> (forall b. f b -> m b) -> m a
@@ -42,10 +43,11 @@ function runF(fa, interp, monad) {
   while (true) {
     if (fa instanceof Pure) {
       return monad.pure(fa.a)
+    } else if (fa instanceof Impure) {
+      return interp(fa.m)
     } else {
-      let m = fa.m() // force
-      return interp(m).flatMap(ma => runF(ma, interp, monad))
-    } 
+      return runF(runF(fa.s, interp, monad).flatMap(fa.f), interp, monad)
+    }
   }
 }
 
