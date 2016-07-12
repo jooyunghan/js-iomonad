@@ -72,6 +72,7 @@ function resume(fa) {
     } else {
       let {s,f} = fa
       if (s instanceof Pure) {
+        if (typeof f !== 'function') console.log("not a function", fa)
         fa = f(s.a)
       } else if (s instanceof Impure) {
         return new Left(s.m.map(b => b.flatMap(f)))

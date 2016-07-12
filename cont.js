@@ -68,6 +68,16 @@ class ReadRef {
   }
 }
 
+class CloseRef {
+  constructor(ref, next) {
+    this.ref = ref
+    this.next = next
+  }
+  map(f) {
+    return new CloseRef(this.ref, f(this.next))
+  }
+}
+
 // smart constructors
 
 function read() {
@@ -106,45 +116,62 @@ function recv_(ref) {
   return liftF(new ReadRef(ref, value => value))
 }
 
+function close(ref) {
+  return liftF(new CloseRef(ref))
+}
+
 // NOTE this is not atomic operation
 function recv(ref) {
   return recv_(ref)
     .flatMap(value => {
-      //console.log("recv_" + value)
-      return typeof value === "undefined" 
-        ? recv(ref)
-        : new Pure(value)})
+      if (typeof value === "undefined") {
+        console.log("reread")
+        return recv(ref)
+      } else {
+        console.log("read!", value)
+        return new Pure(value)
+      }
+    })
 }
 
 function round(actions, cb) {
- // console.log(actions)
+  
   while (actions.length > 0) {
+     console.log(actions)
     let a = actions.shift()
     let r = resume(a)
-//    console.log(r)
+       console.log(r)
     if (r instanceof Left) {
       r = r.left
       if (r instanceof Read) {
         throw new Error("Impossible: " + r)
       } else if (r instanceof Write) {
-        process.stdout.write(r.value)
+        process.stdout.write("" + r.value)
         actions.push(r.next)
       } else if (r instanceof Fork) {
         actions.push(r.next1, r.next2)
       } else if (r instanceof Stop) {
-        throw new Error("Impossible: " + r)
+        continue
       } else if (r instanceof NewRef) {
-        let ref = {value: undefined}
+        let ref = { empty: true, closed: false }
         actions.push(r.next(ref))
       } else if (r instanceof ReadRef) {
+        console.log(r)
         let ref = r.ref
-        let value = ref.value
-        ref.value = undefined
-        actions.push(r.next(value))
+        let value = (!ref.empty) ? ref.value : (!ref.closed) ? undefined : 0
+        ref.empty = true
+        let next = r.next(value)
+        console.log('next', next)
+        actions.push(next)
       } else if (r instanceof WriteRef) {
         let ref = r.ref
         let value = r.value
         ref.value = value
+        ref.empty = false
+        actions.push(r.next)
+      } else if (r instanceof CloseRef) {
+        let ref = r.ref
+        ref.closed = true
         actions.push(r.next)
       } else {
         throw new Error("Impossible: " + r)
@@ -186,6 +213,45 @@ function player(name, c) {
 const pingpong = chan()
   .flatMap(table => fork(player("ping", table))
     .flatMap(() => fork(player("pong", table)))
-    .flatMap(() => send(table, {hits: 0})))
+    .flatMap(() => send(table, { hits: 0 })))
 
-run(pingpong)
+// run(pingpong)
+
+function pure(c) {
+  return new Pure(c)
+}
+
+// Int -> C chan
+function ant(n) {
+  if (n == 0) return chan().flatMap(c => fork(send(c, 1).flatMap(() => close(c))).flatMap(() => pure(c)))
+  else return chan()
+    .flatMap(o => ant(n - 1)
+      .flatMap(i => fork(next(n, i, o)))
+      .flatMap(() => pure(o)))
+}
+
+function next(n, i, o) {
+  function loop(prev, count) {
+    console.log(n, prev, count)
+    return recv(i).flatMap(c => {
+      if (c === 0) {
+        return send(o, count).flatMap(() => send(o, prev))
+      } else if (c === prev) {
+        return loop(prev, count + 1)
+      } else {
+        return send(o, count).flatMap(() => send(o, prev)).flatMap(() => loop(c, 1))
+      }
+    })
+  }
+  return recv(i).flatMap(prev => {
+    console.log(n, prev)
+    return loop(prev, 1)
+  }).flatMap(() => close(o))
+}
+
+run(ant(0).flatMap(c => function loop() {
+  return recv(c).flatMap(value => {
+    if (value === 0) return stop()
+    else return writeln('>' + value + '<').flatMap(() => loop())
+  })
+} ()))
