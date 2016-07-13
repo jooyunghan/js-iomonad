@@ -1,7 +1,11 @@
+const debug = require('debug')('channel')
 const {liftF, Impure, Pure, resume} = require('./free')
 const {forever} = require('./monad')
 const {Left} = require('./either')
+
 // Algebra supporting fork!
+
+// Basic IO 
 
 class Read {
   constructor(next) {
@@ -22,13 +26,56 @@ class Write {
   }
 }
 
-class Fork {
+// Goroutine/Channel 
+
+class Go {
   constructor(next1, next2) {
     this.next1 = next1
     this.next2 = next2
   }
   map(f) {
-    return new Fork(f(this.next1), f(this.next2))
+    // note `f` goes thru `next2` only
+    return new Go(this.next1, f(this.next2))
+  }
+}
+
+class MakeChan {
+  constructor(next) {
+    this.next = next
+  }
+  map(f) {
+    return new MakeChan(ch => f(this.next(ch)))
+  }
+}
+
+class Send {
+  constructor(ch, value, next) {
+    this.ch = ch
+    this.value = value
+    this.next = next
+  }
+  map(f) {
+    return new Send(this.ch, this.value, f(this.next))
+  }
+}
+
+class Recv {
+  constructor(ch, next) {
+    this.ch = ch
+    this.next = next
+  }
+  map(f) {
+    return new Recv(this.ch, a => f(this.next(a)))
+  }
+}
+
+class Close {
+  constructor(ch, next) {
+    this.ch = ch
+    this.next = next
+  }
+  map(f) {
+    return new Close(this.ch, f(this.next))
   }
 }
 
@@ -38,48 +85,7 @@ class Stop {
   }
 }
 
-class NewRef {
-  constructor(next) {
-    this.next = next
-  }
-  map(f) {
-    return new NewRef(ref => f(this.next(ref)))
-  }
-}
-
-class WriteRef {
-  constructor(ref, value, next) {
-    this.ref = ref
-    this.value = value
-    this.next = next
-  }
-  map(f) {
-    return new WriteRef(this.ref, this.value, f(this.next))
-  }
-}
-
-class ReadRef {
-  constructor(ref, next) {
-    this.ref = ref
-    this.next = next
-  }
-  map(f) {
-    return new ReadRef(this.ref, a => f(this.next(a)))
-  }
-}
-
-class CloseRef {
-  constructor(ref, next) {
-    this.ref = ref
-    this.next = next
-  }
-  map(f) {
-    return new CloseRef(this.ref, f(this.next))
-  }
-}
-
 // smart constructors
-
 function read() {
   return liftF(new Read(value => value))
 }
@@ -89,15 +95,15 @@ function write(value) {
 }
 
 function writeln(value) {
-  return write(value + "\n")
+  return write((value || "") + "\n")
 }
 
 function par(a1, a2) {
-  return new Impure(new Fork(a1, a2))
+  return new Impure(new Go(a1, a2))
 }
 
-function fork(a) {
-  return new Impure(new Fork(a, new Pure()))
+function go(a) {
+  return new Impure(new Go(a, done()))
 }
 
 function stop() {
@@ -105,42 +111,29 @@ function stop() {
 }
 
 function chan() {
-  return liftF(new NewRef(ref => ref))
+  return liftF(new MakeChan(ch => ch))
 }
 
-function send(ref, value) {
-  return liftF(new WriteRef(ref, value))
+function send(ch, value) {
+  return liftF(new Send(ch, value))
 }
 
-function recv_(ref) {
-  return liftF(new ReadRef(ref, value => value))
+function recv(ch) {
+  return liftF(new Recv(ch, value => value))
 }
 
-function close(ref) {
-  return liftF(new CloseRef(ref))
+function close(ch) {
+  return liftF(new Close(ch))
 }
 
-// NOTE this is not atomic operation
-function recv(ref) {
-  return recv_(ref)
-    .flatMap(value => {
-      if (typeof value === "undefined") {
-        console.log("reread")
-        return recv(ref)
-      } else {
-        console.log("read!", value)
-        return new Pure(value)
-      }
-    })
+function done(c) {
+  return new Pure(c)
 }
 
 function round(actions, cb) {
-  
   while (actions.length > 0) {
-     console.log(actions)
     let a = actions.shift()
     let r = resume(a)
-       console.log(r)
     if (r instanceof Left) {
       r = r.left
       if (r instanceof Read) {
@@ -148,31 +141,54 @@ function round(actions, cb) {
       } else if (r instanceof Write) {
         process.stdout.write("" + r.value)
         actions.push(r.next)
-      } else if (r instanceof Fork) {
+      } else if (r instanceof Go) {
         actions.push(r.next1, r.next2)
       } else if (r instanceof Stop) {
         continue
-      } else if (r instanceof NewRef) {
-        let ref = { empty: true, closed: false }
-        actions.push(r.next(ref))
-      } else if (r instanceof ReadRef) {
-        console.log(r)
-        let ref = r.ref
-        let value = (!ref.empty) ? ref.value : (!ref.closed) ? undefined : 0
-        ref.empty = true
-        let next = r.next(value)
-        console.log('next', next)
-        actions.push(next)
-      } else if (r instanceof WriteRef) {
-        let ref = r.ref
-        let value = r.value
-        ref.value = value
-        ref.empty = false
+      } else if (r instanceof MakeChan) {
+        let ch = { closed: false, writers: [], readers: [] }
+        actions.push(r.next(ch))
+      } else if (r instanceof Recv) {
+        let ch = r.ch
+        if (ch.closed) {
+          // https://golang.org/ch/spec#Receive_operator
+          // proceed immediately, yielding zero value
+          actions.push(r.next(0))
+          debug('recv zero value')
+        } else if (ch.writers.length == 0) {
+          ch.readers.push(r)
+          debug('recv blocked')
+        } else {
+          let w = ch.writers.shift()
+          let value = w.value
+          actions.push(w.next)
+          actions.push(r.next(value))
+          debug('recv succeeded')
+        }
+      } else if (r instanceof Send) {
+        let ch = r.ch
+        if (ch.closed) {
+          throw new Error('write to closed')
+        } else if (ch.readers.length == 0) {
+          ch.writers.push(r)
+          debug('send blocked')
+        } else {
+          let reader = ch.readers.shift()
+          let value = r.value
+          actions.push(reader.next(value))
+          actions.push(r.next)
+          debug('send succeeded')
+        }
+      } else if (r instanceof Close) {
+        let ch = r.ch
+        ch.closed = true
+        if (ch.writers.length > 0) {
+          throw new Error('write to closed')
+        }
+        actions.push(...ch.readers.map(reader => reader.next(0)))
+        ch.readers = []
         actions.push(r.next)
-      } else if (r instanceof CloseRef) {
-        let ref = r.ref
-        ref.closed = true
-        actions.push(r.next)
+        debug('channel closed', ch)
       } else {
         throw new Error("Impossible: " + r)
       }
@@ -194,7 +210,7 @@ function loop(s) {
 }
 
 const example = write('start!')
-  .flatMap(() => fork(loop('fish')))
+  .flatMap(() => go(loop('fish')))
   .flatMap(() => loop('cat'))
 
 // following example is taken from 
@@ -211,28 +227,32 @@ function player(name, c) {
 }
 
 const pingpong = chan()
-  .flatMap(table => fork(player("ping", table))
-    .flatMap(() => fork(player("pong", table)))
+  .flatMap(table => go(player("ping", table))
+    .flatMap(() => go(player("pong", table)))
     .flatMap(() => send(table, { hits: 0 })))
 
-// run(pingpong)
+//run(pingpong)
 
-function pure(c) {
-  return new Pure(c)
-}
-
-// Int -> C chan
+// Look-and-say sequence
+// in CSP way
+ 
 function ant(n) {
-  if (n == 0) return chan().flatMap(c => fork(send(c, 1).flatMap(() => close(c))).flatMap(() => pure(c)))
+  if (n == 0) return init()
   else return chan()
     .flatMap(o => ant(n - 1)
-      .flatMap(i => fork(next(n, i, o)))
-      .flatMap(() => pure(o)))
+      .flatMap(i => go(next(i, o)))
+      .flatMap(() => done(o)))
 }
 
-function next(n, i, o) {
+function init() {
+  return chan()
+    .flatMap(c => 
+      go(send(c, 1).flatMap(() => close(c)))
+      .flatMap(() => done(c)))
+}
+
+function next(i, o) {
   function loop(prev, count) {
-    console.log(n, prev, count)
     return recv(i).flatMap(c => {
       if (c === 0) {
         return send(o, count).flatMap(() => send(o, prev))
@@ -244,14 +264,12 @@ function next(n, i, o) {
     })
   }
   return recv(i).flatMap(prev => {
-    console.log(n, prev)
     return loop(prev, 1)
   }).flatMap(() => close(o))
 }
 
-run(ant(0).flatMap(c => function loop() {
-  return recv(c).flatMap(value => {
-    if (value === 0) return stop()
-    else return writeln('>' + value + '<').flatMap(() => loop())
-  })
-} ()))
+function each(ch, f) {
+  return recv(ch).flatMap(v => v === 0 ? done() : f(v).flatMap(() => each(ch, f)))
+}
+
+run(ant(10).flatMap(ch => each(ch, write)))
