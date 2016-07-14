@@ -1,4 +1,4 @@
-const {run, read, write, go, chan, send, recv, close} = require('./go')
+const {run, read, writeln, go, chan, send, recv, close, done} = require('./go')
 const {forever} = require('./monad')
 
 // Look-and-say sequence
@@ -40,4 +40,10 @@ function each(ch, f) {
   return recv(ch).flatMap(v => v === 0 ? done() : f(v).flatMap(() => each(ch, f)))
 }
 
-run(ant(10).flatMap(ch => each(ch, write)))
+function nth(ch, n) {
+  return n === 0 ? recv(ch)
+    : recv(ch).flatMap(() => nth(ch, n-1))
+}
+
+// node --max-old-space-size=4096 go-ant.js
+run(ant(1000000).flatMap(ch => nth(ch, 1000000)).flatMap(writeln))
