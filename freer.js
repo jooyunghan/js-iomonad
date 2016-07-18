@@ -1,4 +1,4 @@
-// ref: http://okmij.org/ftp/Computation/free-monad.html 
+// ref: http://okmij.org/ftp/Computation/free-monad.html
 
 // type State s a =  s -> (a, s)
 class State {
@@ -9,7 +9,7 @@ class State {
     return this.unState(s)
   }
 
-  // We can forget pure/map/flatMap 
+  // We can forget pure/map/flatMap
   // by using FFree.
   // This is a 'profitable cheating'
   // See http://okmij.org/ftp/Computation/free-monad.html#cheating
@@ -75,7 +75,7 @@ class FImpure extends FFree {
     return new FImpure(this.f, compose(map(f), this.k))
   }
   flatMap(f) {
-    return new FImpure(this.f, kcompose(f, this.k))
+    return new FImpure(this.f, kcompose(this.k, f))
   }
 }
 
@@ -83,11 +83,14 @@ function map(f) {
   return fa => fa.map(f)
 }
 
+// composition of two functions
 function compose(f, g) {
   return x => f(g(x))
 }
 
-function kcompose(f, g) {
+// composition of two kleisli arrows
+// kcompose :: (a -> m b) -> (b -> m c) -> (a -> m c)
+function kcompose(g, f) {
   return x => g(x).flatMap(f)
 }
 
@@ -95,6 +98,8 @@ function kcompose(f, g) {
 function liftFF(f) {
   return new FImpure(f, a => new FPure(a))
 }
+
+// lifting State's operations get/put to FFree
 
 function getFF() {
   return liftFF(get())
@@ -106,48 +111,167 @@ function putFF(s) {
 
 // runStateFF :: FFree (State s) a -> s -> (a,s)
 function runStateFF(state, s) {
-  if (state instanceof FPure) {
-    let {a} = state
-    return [a, s]
-  } else if (state instanceof FImpure) {
+  while (state instanceof FImpure) {
     let {f, k} = state
     let [a, ss] = f.run(s)
-    return runStateFF(k(a), ss)
-  } else {
-    throw new Error("No FFree instance", state)
+    state = k(a)
+    s = ss
   }
+  return [state.a, s]
+}
+
+
+// function getFF() {
+//   return liftFF({name: 'get'})
+// }
+
+// function putFF(s) {
+//   return liftFF({name: 'put', s})
+// }
+
+function runStateFF2(prog, s) {
+  while (prog instanceof FImpure) {
+    let {f, k} = prog
+    if (f.name == 'get') {
+      prog = k(s)
+    } else {
+      s = f.s
+      prog = k()
+    }
+  }
+  return [prog.a, s]
 }
 
 const testFF = getFF().flatMap((a) => putFF(a + 2)).flatMap(() => getFF())
 console.log(runStateFF(testFF, 0))
 
-function read() {
-  return liftFF({ type: 'read' })
-}
-
-function write(value) {
-  return liftFF({ type: 'write', value })
-}
 
 const {forever} = require('./monad')
-const prog = forever(read().flatMap(input => write('> ' + input)))
 
-const readline = require('./readline')
-function runRW(prog) {
-  while (true) {
-    if (prog instanceof FPure) {
-      process.exit()
-    } else {
-      let {f, k} = prog
-      if (f.type === 'read') {
-        readline(input => runRW(k(input)))
-        break
-      } else {
-        console.log(f.value)
-        prog = k()
+// function read() {
+//   return liftFF({ name: 'read' })
+// }
+
+// function write(value) {
+//   return liftFF({ name: 'write', value })
+// }
+
+// const prog = forever(read().flatMap(input => write('> ' + input)))
+
+// const readline = require('./readline')
+// function runRW(prog) {
+//   while (true) {
+//     if (prog instanceof FPure) {
+//       process.exit()
+//     } else {
+//       let {f, k} = prog
+//       if (f.name === 'read') {
+//         readline(input => runRW(k(input)))
+//         break
+//       } else {
+//         console.log(f.value)
+//         prog = k()
+//       }
+//     }
+//   }
+// }
+
+//runRW(prog)
+
+function liftFF2(name, argNames) {
+  return function (...args) {
+    let f = Object.assign({ name })
+    for (let i = 0; i < argNames.length; i++) {
+      f[argNames[i]] = args[i]
+    }
+    return liftFF(f)
+  }
+}
+
+const chan = liftFF2('chan', [])
+const send = liftFF2('send', ['ch', 'value'])
+const recv = liftFF2('recv', ['ch'])
+const close = liftFF2('close', ['ch'])
+const fork = liftFF2('fork', ['f'])
+
+function roundRobin(processes) {
+  while (processes.length > 0) {
+    let p = processes.shift()
+    if (p instanceof FPure) {
+      console.log("exit with " + p.a)
+    } else if (p instanceof FImpure) {
+      let {f, k} = p
+      switch (f.name) {
+        case 'chan':
+          {
+            let ch = { readers: [], writers: [], closed: false }
+            processes.push(k(ch))
+            break
+          }
+        case 'send':
+          {
+            let {ch, value} = f
+            if (ch.closed) {
+              throw new Error('send to closed channel', value)
+            } else if (ch.readers.length > 0) {
+              let rk = ch.readers.shift()
+              processes.push(k())
+              processes.push(rk(value))
+            } else {
+              ch.writers.push({ wk: k, value })
+            }
+            break
+          }
+        case 'recv':
+          {
+            let {ch} = f
+            if (ch.closed) {
+              processes.push(k())
+            } else if (ch.writers.length > 0) {
+              let {wk, value} = ch.writers.shift()
+              processes.push(k(value))
+              processes.push(wk())
+            } else {
+              ch.readers.push(k)
+            }
+            break
+          }
+        case 'close':
+          {
+            let {ch} = f
+            if (ch.closed) {
+              throw new Error('close a closed channel')
+            } else if (ch.writers.length > 0) {
+              throw new Error('close a channel with writers')
+            } else {
+              processes.push(k())
+              processes.push(...ch.readers.map(k => k()))
+            }
+            break
+          }
+        case 'fork':
+          {
+            let forked = f.f
+            processes.push(k())
+            processes.push(forked)
+            break
+          }
+        default:
+          throw new Error('unknown Go operation', f)
       }
+    } else {
+      throw new Error('unknown FFree instance', p)
     }
   }
 }
 
-//runRW(prog)
+function runGo(prog) {
+  return roundRobin([prog])
+}
+
+const sendAndRecv = c => send(c, 1).flatMap(() => recv(c)).flatMap(n => FFree.pure(n))
+const recvAndSend = c => recv(c).flatMap(n => send(c, n * 10)).flatMap(() => FFree.pure('bye~'))
+const goProg = chan()
+  .flatMap(c => fork(sendAndRecv(c)).flatMap(() => recvAndSend(c)))
+
+runGo(goProg)
